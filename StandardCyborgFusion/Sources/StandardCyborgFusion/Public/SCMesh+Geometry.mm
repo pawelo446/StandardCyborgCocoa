@@ -51,6 +51,10 @@ using math::Vec2;
 
 + (NSData *)_texCoordDataFromGeometry:(const sc3d::Geometry &)geo
 {
+    if (geo.getTexCoords().size() != geo.vertexCount()) {
+        return nil;
+    }
+
     return [NSData dataWithBytes:(const void *)geo.getTexCoords().data()
                           length:geo.vertexCount() * sizeof(Vec2)];
 }
@@ -83,11 +87,15 @@ using math::Vec2;
            textureResolution:(NSInteger)textureResolution
 {
     NSParameterAssert(textureDataVec.size() == textureResolution * textureResolution * 4);
-    
+
     if (geo.vertexCount() == 0 || geo.faceCount() == 0 || textureResolution <= 0) {
         return nil;
     }
-    
+
+    if (geo.getTexCoords().size() != geo.vertexCount()) {
+        return nil;
+    }
+
     NSData *positionData = [self _positionDataFromGeometry:geo];
     NSData *normalData = [self _normalDataFromGeometry:geo];
     NSData *texCoordData = [self _texCoordDataFromGeometry:geo];
@@ -110,12 +118,16 @@ using math::Vec2;
     if (geo.vertexCount() == 0 || geo.faceCount() == 0) {
         return nil;
     }
-    
+
+    if (geo.getTexCoords().size() != geo.vertexCount()) {
+        return nil;
+    }
+
     NSData *positionData = [self _positionDataFromGeometry:geo];
     NSData *normalData = [self _normalDataFromGeometry:geo];
     NSData *texCoordData = [self _texCoordDataFromGeometry:geo];
     NSData *facesData = [self _facesDataFromGeometry:geo];
-    
+
     return [[SCMesh alloc] initWithPositionData:positionData
                                      normalData:normalData
                                    texCoordData:texCoordData
