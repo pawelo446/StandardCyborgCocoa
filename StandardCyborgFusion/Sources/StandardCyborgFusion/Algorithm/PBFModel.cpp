@@ -148,12 +148,13 @@ static CameraVelocity _cameraVelocity(PBFAssimilatedFrameMetadata* previousFrame
     Vector3f previousZ = previousExtrinsicMatrixInverse.col(2).head<3>();
     Vector3f previousP = previousExtrinsicMatrixInverse.col(3).head<3>();
 
-#if DEBUG
-    // This is going to be running VERY slowly, so force-override the delta time to 1/30s
-    double deltaT = 1.0 / 30.0;
-#else
+    // mirrorscan-patches: upstream force-overrode deltaT to 1/30s in DEBUG builds, assuming they
+    // run too slowly for real timestamps. On modern devices fusion runs at 10-15 FPS with dropped
+    // frames, so a fixed 1/30s inflates the computed velocity 2-5x. Worse, after one rejected
+    // frame the pose delta accumulates against the last *valid* frame while deltaT stays fixed,
+    // so the apparent velocity grows every frame and tracking never recovers. Real timestamps
+    // measure velocity correctly in both configurations.
     double deltaT = (double)(currentFrameMeta->timestamp - previousFrameMeta->timestamp);
-#endif
     
     return CameraVelocity{
         Vector3f(
