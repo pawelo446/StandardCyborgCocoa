@@ -46,23 +46,22 @@ sc3d::PerspectiveCamera PerspectiveCameraFromAVCameraCalibrationData(AVCameraCal
     // coordinate system we otherwise prefer, so we post-multiply by an orientation matrix to
     // produce world space with x to the right, y up, and z toward the user.
     //
-    // On 4:3 TrueDepth sensors, the sensor's pixel-u axis points UP in portrait, so we swap
-    // X↔Y and negate Z. On 16:9 sensors (iPhone 17 Pro+), the pixel-u axis points RIGHT in
-    // portrait, so no swap is needed — just negate Y and Z.
-    CGSize refDims = calibrationData.intrinsicMatrixReferenceDimensions;
-    bool isWidescreenSensor = (refDims.width / refDims.height) > 1.5f;
-
-    math::Mat3x4 desiredOrientation = isWidescreenSensor
-        ? math::Mat3x4({
-            1, 0, 0, 0,
-            0, -1, 0, 0,
-            0, 0, -1, 0
-        })
-        : math::Mat3x4({
-            0, 1, 0, 0,
-            1, 0, 0, 0,
-            0, 0, -1, 0
-        });
+    // The sensor's pixel-u axis points UP in portrait, so we swap X↔Y and negate Z.
+    //
+    // mirrorscan-patches: upstream gated an alternate matrix (diag(1,-1,-1)) on
+    // intrinsicMatrixReferenceDimensions aspect > 1.5, assuming a widescreen stream implies a
+    // 90°-rotated sensor mounting. That heuristic misclassifies: reference dimensions follow the
+    // *selected depth format*, not the physical mounting, so any device streaming 16:9 depth got
+    // the alternate matrix and produced models rotated -90° about Z (confirmed by on-device
+    // calibration: a +90° Z rotation restored them, which composes back to exactly this matrix).
+    // See also upstream PR #57, which found the same misclassification on iPhone 15 Pro Max and
+    // proposes gating by device model instead. If a device genuinely needing diag(1,-1,-1) turns
+    // up, reintroduce the branch keyed on the device model, not the stream aspect.
+    math::Mat3x4 desiredOrientation({
+        0, 1, 0, 0,
+        1, 0, 0, 0,
+        0, 0, -1, 0
+    });
     // We construct a baseline extrinsic matrix strictly to nail down our desired output given
     // expected input, with the additional expectation that if the extrinsic matrix returned by
     // Apple changed for some reason, we'd actually want to pick up those changes. That is to say,
