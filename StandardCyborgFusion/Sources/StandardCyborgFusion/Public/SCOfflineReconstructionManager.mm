@@ -355,7 +355,7 @@ using namespace standard_cyborg;
 
     CFAbsoluteTime endTime = CFAbsoluteTimeGetCurrent();
 
-    SCAssimilatedFrameMetadata metadata = SCAssimilatedFrameMetadataFromPBFAssimilatedFrameMetadata(pbfMetadata, 0);
+    SCAssimilatedFrameMetadata metadata = SCAssimilatedFrameMetadataFromPBFAssimilatedFrameMetadata(pbfMetadata, 0, kDefaultMaxConsecutiveFailedFrameCount);
     metadata.assimilationTime = endTime - startTime;
     return metadata;
 }

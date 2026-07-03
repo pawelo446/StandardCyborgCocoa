@@ -59,6 +59,9 @@ typedef struct {
 /** When non-empty, clips the reconstruction region of incoming depth buffers and frames to this position and size, each normalized from [0..1] */
 @property (nonatomic) CGRect normalizedFrameClipRegion;
 
+/** Number of consecutive un-assimilable frames after which scanning is declared failed/ended. Default 8. */
+@property (nonatomic) NSInteger maxConsecutiveFailedFrameCount;
+
 /** The camera calibration data used by the most recently passed depth frame. */
 @property (nonatomic, readonly) AVCameraCalibrationData *latestCameraCalibrationData;
 @property (nonatomic, readonly) NSInteger latestCameraCalibrationFrameWidth;

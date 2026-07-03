@@ -113,7 +113,8 @@ NS_ASSUME_NONNULL_BEGIN
     BOOL _modelQueue_hasCalculatedModelConfig;
     BOOL _finalized;
     BOOL _wroteIntrinsicsToFile;
-    
+    NSInteger _maxConsecutiveFailedFrameCount;
+
     GravityEstimator _gravityEstimator;
 }
 
@@ -128,7 +129,8 @@ NS_ASSUME_NONNULL_BEGIN
 
         _modelQueue_maxDepth = _surfelFusionConfig.maxDepth;
         _userSetMaxDepth = NO;
-        
+        _maxConsecutiveFailedFrameCount = kDefaultMaxConsecutiveFailedFrameCount;
+
         id<MTLLibrary> library = [device newDefaultLibraryWithBundle:[SCFusionBundle fusionBundle] error:NULL];
         
         std::shared_ptr<SurfelIndexMap> surfelIndexMap(new MetalSurfelIndexMap(device, library, commandQueue));
@@ -251,6 +253,17 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)clearMaxDepth
 {
     _userSetMaxDepth = NO;
+}
+
+- (NSInteger)maxConsecutiveFailedFrameCount
+{
+    return _maxConsecutiveFailedFrameCount;
+}
+
+- (void)setMaxConsecutiveFailedFrameCount:(NSInteger)maxConsecutiveFailedFrameCount
+{
+    NSParameterAssert(maxConsecutiveFailedFrameCount >= 1);
+    _maxConsecutiveFailedFrameCount = maxConsecutiveFailedFrameCount;
 }
 
 // MARK: -
@@ -506,7 +519,8 @@ static const float kCenterDepthExpansionRatio = 1.4;
         PBFAssimilatedFrameMetadata pbfMetadata = [self _modelQueue_assimilateIncomingFrameData:incomingFrameData];
         
         SCAssimilatedFrameMetadata metadata = SCAssimilatedFrameMetadataFromPBFAssimilatedFrameMetadata(pbfMetadata,
-                                                                                                        _inputQueue_statistics.consecutiveLostTrackingCount);
+                                                                                                        _inputQueue_statistics.consecutiveLostTrackingCount,
+                                                                                                        _maxConsecutiveFailedFrameCount);
         
         if (_includesDepthBuffersInMetadata) {
             metadata.depthBuffer = CVPixelBufferRetain(incomingFrameData.depthBuffer);
