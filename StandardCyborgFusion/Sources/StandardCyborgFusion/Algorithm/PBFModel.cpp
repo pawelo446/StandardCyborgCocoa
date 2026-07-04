@@ -6,7 +6,6 @@
 //
 
 
-#import <chrono>
 #import <iostream>
 #import <cmath>
 #import <standard_cyborg/util/DataUtils.hpp>
@@ -248,12 +247,7 @@ PBFAssimilatedFrameMetadata PBFModel::assimilate(ProcessedFrame& frame,
             predictedExtrinsic = dampedDelta * _extrinsicMatrix;
         }
 
-        std::chrono::steady_clock::time_point icpStart = std::chrono::steady_clock::now();
         ICPResult icpResult = _runICP(frame, surfelFusionConfiguration, icpConfig, pbfConfig, predictedExtrinsic);
-        std::chrono::steady_clock::time_point icpEnd = std::chrono::steady_clock::now();
-        DEBUG_LOG("[PBF] icp took %.1fms (%d iterations)",
-                  std::chrono::duration<double, std::milli>(icpEnd - icpStart).count(),
-                  icpResult.iterationCount);
 
         // The transform ICP returns is the residual on top of `predictedExtrinsic`, so
         // compose it with `predictedExtrinsic`, NOT `_extrinsicMatrix`.
@@ -308,7 +302,6 @@ PBFAssimilatedFrameMetadata PBFModel::assimilate(ProcessedFrame& frame,
         _surfels.reserve(width * height);
     }
     
-    std::chrono::steady_clock::time_point fusionStart = std::chrono::steady_clock::now();
     if (!_surfelFusion.doFusion(surfelFusionConfiguration,
                                 frame,
                                 _surfels,
@@ -323,10 +316,6 @@ PBFAssimilatedFrameMetadata PBFModel::assimilate(ProcessedFrame& frame,
         frameMeta.isMerged = true;
         frameMeta.surfelCount = _surfels.size();
     }
-    std::chrono::steady_clock::time_point fusionEnd = std::chrono::steady_clock::now();
-    DEBUG_LOG("[PBF] fusion took %.1fms (%zu surfels)",
-              std::chrono::duration<double, std::milli>(fusionEnd - fusionStart).count(),
-              _surfels.size());
     
     _assimilatedFrameMetadatas.push_back(frameMeta);
 

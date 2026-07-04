@@ -28,7 +28,6 @@
 #import "SCReconstructionManagerParameters.h"
 #import "SCReconstructionManager_Private.h"
 
-#import <algorithm>
 #import <iostream>
 #import <objc/runtime.h>
 
@@ -111,7 +110,6 @@ NS_ASSUME_NONNULL_BEGIN
     ProcessedFrame *_modelQueue_frame;
     float _modelQueue_maxDepth;
     BOOL _userSetMaxDepth;
-    BOOL _userSetICPDownsampleFraction;
     BOOL _modelQueue_hasCalculatedModelConfig;
     BOOL _finalized;
     BOOL _wroteIntrinsicsToFile;
@@ -140,13 +138,6 @@ NS_ASSUME_NONNULL_BEGIN
         
         _icpConfig.maxIterations = (int)[[NSUserDefaults standardUserDefaults] integerForKey:@"icp_max_iteration_count"] ?: _icpConfig.maxIterations;
         _icpConfig.tolerance = [[NSUserDefaults standardUserDefaults] floatForKey:@"icp_tolerance"] ?: _icpConfig.tolerance;
-
-        // mirrorscan-patches: the upstream default of 1 thread dates from the iPhone X ("2 cores,
-        // one busy with UI"). Correspondence search is the ICP hot loop and parallelizes cleanly
-        // (the kd-tree is pre-warmed before fan-out; partial sums are per-thread). Leave two cores
-        // for the camera/UI/GPU-driver work. Note the worker ThreadPool is created statically on
-        // first use, so this must be set before the first frame and stays constant per process.
-        _icpConfig.threadCount = std::max(2, std::min(5, (int)[[NSProcessInfo processInfo] processorCount] - 2));
         
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         if ([defaults objectForKey:@"icp_motion_prediction_enabled"] != nil) {
@@ -202,9 +193,6 @@ NS_ASSUME_NONNULL_BEGIN
 {
     NSParameterAssert(fraction >= 0 && fraction <= 1);
     _pbfConfig.icpDownsampleFraction = fraction;
-    // mirrorscan-patches: without this guard, _modelQueue_configureModelForRawFrame overwrites
-    // the caller's value with its resolution-scaled default on the first frame of every scan.
-    _userSetICPDownsampleFraction = YES;
 }
 
 - (int)maxThreadCount
@@ -608,31 +596,21 @@ static const float kCenterDepthExpansionRatio = 1.4;
 - (PBFAssimilatedFrameMetadata)_modelQueue_assimilateIncomingFrameData:(_IncomingFrameData *)data
 {
     CFAbsoluteTime startTime = CFAbsoluteTimeGetCurrent();
-
+    
     [self _modelQueue_fillRawFrameWithData:data];
-    CFAbsoluteTime fillTime = CFAbsoluteTimeGetCurrent();
-
+    
     [self _modelQueue_unprojectRawFrameIntoFrame];
-    CFAbsoluteTime unprojectTime = CFAbsoluteTimeGetCurrent();
-
+    
     [self _modelQueue_configureModelForRawFrame];
-
+    
     auto metadata = _modelQueue_model->assimilate(*_modelQueue_frame, _pbfConfig, _icpConfig, _surfelFusionConfig, startTime);
-
+    
 #ifndef XCODE_ACTION_install // Avoid logging in archive builds
     float quality = metadata.icpUnusedIterationFraction;
-
+    
     CFAbsoluteTime endTime = CFAbsoluteTimeGetCurrent();
-    // mirrorscan-patches: per-stage breakdown for on-device profiling.
-    // fill = CPU copy out of the CVPixelBuffers; depth = GPU smoothing/normals/unprojection;
-    // model = ICP + surfel fusion (further split in PBFModel's [PBF] log lines).
-    printf("[RC] frame seq=%d took %.2fms (fill=%.1f depth=%.1f model=%.1f) quality=%.3f\n",
-           data.sequence,
-           1000.0 * (endTime - startTime),
-           1000.0 * (fillTime - startTime),
-           1000.0 * (unprojectTime - fillTime),
-           1000.0 * (endTime - unprojectTime),
-           quality);
+    printf("[RC] frame seq=%d took %.2fms quality=%.3f\n",
+           data.sequence, 1000.0 * (endTime - startTime), quality);
 #endif
     
     return metadata;
@@ -691,11 +669,9 @@ static const float kCenterDepthExpansionRatio = 1.4;
         _surfelFusionConfig.maxDepth = averageDepthAtCenter * kCenterDepthExpansionRatio;
     }
     
-    if (_userSetICPDownsampleFraction == NO) {
-        size_t frameWidth = _modelQueue_frame->rawFrame.width;
-        size_t frameHeight = _modelQueue_frame->rawFrame.height;
-        _pbfConfig.icpDownsampleFraction = 0.05 * 640.0 / (float)frameWidth * 360.0 / (float)frameHeight;
-    }
+    size_t frameWidth = _modelQueue_frame->rawFrame.width;
+    size_t frameHeight = _modelQueue_frame->rawFrame.height;
+    _pbfConfig.icpDownsampleFraction = 0.05 * 640.0 / (float)frameWidth * 360.0 / (float)frameHeight;
     
     _modelQueue_maxDepth = _surfelFusionConfig.maxDepth;
     _modelQueue_hasCalculatedModelConfig = YES;
