@@ -25,14 +25,26 @@ SurfelFusion::SurfelFusion(std::shared_ptr<SurfelIndexMap> surfelIndexMap) :
 {
 }
 
-void SurfelFusion::cullLowConfidence(bool ignoreLifetime, int minWeight, Surfels& surfels, std::vector<int>* deletedSurfelList)
+// mirrorscan-perf: cadence for the batched cull + lifetime-decay sweep below. Matches the
+// kd-tree rebuild interval; at the 10-15 FPS the engine sustains at 640x360 this is a sweep
+// roughly twice a second.
+static const int kCullSweepInterval = 6;
+
+void SurfelFusion::cullLowConfidence(bool ignoreLifetime, int minWeight, Surfels& surfels, std::vector<int>* deletedSurfelList, uint32_t lifetimeDecay)
 {
     size_t surfelCount = surfels.size();
     size_t compressedIndex = 0;
-    
+
     for (size_t index = 0; index < surfelCount; ++index) {
         Surfel& surfel = surfels[index];
-        
+
+        // Saturating decay, folded into this sweep so expiry costs no extra pass over the
+        // surfels. Saturating at 0 (instead of letting the unsigned field wrap to ~4 billion,
+        // which upstream leaned on to make weight>=minWeight surfels effectively immortal)
+        // keeps the same outcome: a confident surfel's weight never decreases, so the weight
+        // test below retains it forever either way.
+        surfel.lifetime = surfel.lifetime > lifetimeDecay ? surfel.lifetime - lifetimeDecay : 0;
+
         if ((surfel.lifetime > 0 && !ignoreLifetime) || (surfel.weight >= minWeight)) {
             surfels[compressedIndex] = surfels[index];
             
@@ -104,6 +116,12 @@ bool SurfelFusion::doFusion(SurfelFusionConfiguration surfelFusionConfiguration,
     // the incoming depth information. This will allow us to answer the question:
     // does an incoming depth sample land on top of an existing surfel?
     
+    if (surfels.empty()) {
+        // New scan: PBFModel::reset() clears the surfels but SurfelFusion has no reset hook,
+        // so restart the cull cadence here rather than carrying a stale count across scans.
+        _framesSinceCullSweep = 0;
+    }
+
     if (_surfelIndexLookups.size() != width * height) {
         _surfelIndexLookups = std::vector<uint32_t>(width * height, 0);
     }
@@ -267,30 +285,38 @@ bool SurfelFusion::doFusion(SurfelFusionConfiguration surfelFusionConfiguration,
         }
     }
 
+    // mirrorscan-perf: the cull compaction and the lifetime decay each swept every surfel on
+    // every frame — two O(surfelCount) passes whose cost grows linearly as the model
+    // accumulates, which is what made 640x360 scans bog down within seconds. Batched on a
+    // fixed cadence (decaying by however many frames elapsed) the outcome is identical except
+    // that an expiring surfel dies up to kCullSweepInterval-1 frames later, during which it
+    // remains a valid merge target.
     if (surfelFusionConfiguration.cullLowConfidence) {
-        if (screenSpaceLandmarks == NULL && surfelLandmarksIndex.size() == 0) {
-            this->cullLowConfidence(surfelFusionConfiguration.ignoreLifetime, surfelFusionConfiguration.minCount, surfels);
-        } else {
-            // If there are landmarks, we have to track deleted surfels so we can renumber the
-            // landmarks index.
+        ++_framesSinceCullSweep;
 
-            // Flush any previously-deleted surfels from this list without deallocating the memory.
-            // This is just a microoptimization to avoid constantly allocating and deallocating a
-            // ~4000 element vector in favor of just storing the high-water mark and overwriting.
-            deletedSurfelIndicesList.clear();
+        if (_framesSinceCullSweep >= kCullSweepInterval) {
+            const uint32_t lifetimeDecay = (uint32_t)_framesSinceCullSweep;
+            _framesSinceCullSweep = 0;
 
-            // Cull low confidence surfels and store the deleted surfels in a list for the sake
-            // of renumbering the surfel landmark index
-            this->cullLowConfidence(surfelFusionConfiguration.ignoreLifetime, surfelFusionConfiguration.minCount, surfels, &deletedSurfelIndicesList);
+            if (screenSpaceLandmarks == NULL && surfelLandmarksIndex.size() == 0) {
+                this->cullLowConfidence(surfelFusionConfiguration.ignoreLifetime, surfelFusionConfiguration.minCount, surfels, NULL, lifetimeDecay);
+            } else {
+                // If there are landmarks, we have to track deleted surfels so we can renumber the
+                // landmarks index.
 
-            // Delete and renumber sparse surfel landmark storage
-            surfelLandmarksIndex.deleteSurfelLandmarksAndRenumber(deletedSurfelIndicesList);
+                // Flush any previously-deleted surfels from this list without deallocating the memory.
+                // This is just a microoptimization to avoid constantly allocating and deallocating a
+                // ~4000 element vector in favor of just storing the high-water mark and overwriting.
+                deletedSurfelIndicesList.clear();
+
+                // Cull low confidence surfels and store the deleted surfels in a list for the sake
+                // of renumbering the surfel landmark index
+                this->cullLowConfidence(surfelFusionConfiguration.ignoreLifetime, surfelFusionConfiguration.minCount, surfels, &deletedSurfelIndicesList, lifetimeDecay);
+
+                // Delete and renumber sparse surfel landmark storage
+                surfelLandmarksIndex.deleteSurfelLandmarksAndRenumber(deletedSurfelIndicesList);
+            }
         }
-    }
- 
-    // Decay the lifetimes by one step
-    for (auto& surfel : surfels) {
-        surfel.lifetime--;
     }
 
     #if DETAILED_PBF_MERGE_STATS
