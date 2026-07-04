@@ -48,7 +48,10 @@ using namespace standard_cyborg;
             return YES;
         }
     }
-    
+
+    // mirrorscan-patches: no texture at all (e.g. texturing failed) — nothing to write.
+    if (self.textureData == nil || self.textureWidth == 0 || self.textureHeight == 0) { return NO; }
+
     std::vector<math::Vec4> rgba(self.textureWidth * self.textureHeight, math::Vec4{0, 0, 0, 0});
     memcpy(rgba.data(), [self.textureData bytes], [self.textureData length]);
     
@@ -242,7 +245,10 @@ using namespace standard_cyborg;
     }
     
     NSData *JPEGData = [self encodeTextureToJPEGData];
-    
+    // mirrorscan-patches: the GLB structure hard-codes a texture buffer, so an untextured mesh
+    // can't be written in this format — fail the writer instead of crashing downstream.
+    if (JPEGData == nil) { return NO; }
+
     typedef tinygltf::Value::Object Object;
     typedef tinygltf::Value Value;
     
@@ -513,24 +519,39 @@ using namespace standard_cyborg;
                                                     isCube:NO];
     */
     
-    // Flip the texture vertically
-    NSURL *textureURL = [NSURL fileURLWithPath:self.textureJPEGPath];
-    NSURL *flippedTextureURL = [NSURL fileURLWithPath:[self.textureJPEGPath stringByReplacingOccurrencesOfString:@".jpeg" withString:@"-flipped.jpeg"]];
-    CIImage *flippedTexture = [CIImage imageWithContentsOfURL:textureURL];
-    flippedTexture = [flippedTexture imageByApplyingTransform:CGAffineTransformMakeScale(1, -1)];
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    [[CIContext context] writeJPEGRepresentationOfImage:flippedTexture
-                                                  toURL:flippedTextureURL
-                                             colorSpace:colorSpace
-                                                options:@{}
-                                                  error:NULL];
-    CGColorSpaceRelease(colorSpace);
-    
-    MDLScatteringFunction *scattering = [[MDLScatteringFunction alloc] init];
-    [[scattering baseColor] setURLValue:flippedTextureURL];
-    
-    MDLMaterial *material = [[MDLMaterial alloc] initWithName:@"BaseColor" scatteringFunction:scattering];
-    [[material propertyWithSemantic:MDLMaterialSemanticBaseColor] setURLValue:flippedTextureURL];
+    // mirrorscan-patches: textureJPEGPath is nil when texturing failed or the mesh was
+    // vertex-colored; fall back to encoding the in-memory texture, and if there is no texture
+    // at all, export without a material instead of crashing in -[NSURL initFileURLWithPath:].
+    NSString *sourceTexturePath = self.textureJPEGPath;
+    if (sourceTexturePath == nil && self.textureData != nil) {
+        NSString *tempJPEGPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                                  [NSString stringWithFormat:@"SCMesh-usdc-texture-%@.jpeg", [[NSUUID UUID] UUIDString]]];
+        if ([self writeTextureToJPEGAtPath:tempJPEGPath]) {
+            sourceTexturePath = tempJPEGPath;
+        }
+    }
+
+    MDLMaterial *material = nil;
+    if (sourceTexturePath != nil) {
+        // Flip the texture vertically
+        NSURL *textureURL = [NSURL fileURLWithPath:sourceTexturePath];
+        NSURL *flippedTextureURL = [NSURL fileURLWithPath:[sourceTexturePath stringByReplacingOccurrencesOfString:@".jpeg" withString:@"-flipped.jpeg"]];
+        CIImage *flippedTexture = [CIImage imageWithContentsOfURL:textureURL];
+        flippedTexture = [flippedTexture imageByApplyingTransform:CGAffineTransformMakeScale(1, -1)];
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        [[CIContext context] writeJPEGRepresentationOfImage:flippedTexture
+                                                      toURL:flippedTextureURL
+                                                 colorSpace:colorSpace
+                                                    options:@{}
+                                                      error:NULL];
+        CGColorSpaceRelease(colorSpace);
+
+        MDLScatteringFunction *scattering = [[MDLScatteringFunction alloc] init];
+        [[scattering baseColor] setURLValue:flippedTextureURL];
+
+        material = [[MDLMaterial alloc] initWithName:@"BaseColor" scatteringFunction:scattering];
+        [[material propertyWithSemantic:MDLMaterialSemanticBaseColor] setURLValue:flippedTextureURL];
+    }
     
     MDLMeshBufferDataAllocator *allocator = [[MDLMeshBufferDataAllocator alloc] init];
     

@@ -87,8 +87,11 @@
     // This is the asiest way to feed the texture to SceneKit
     if (self.textureJPEGPath == nil) {
         NSString *tempJPEGPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"temp-buildMeshNode.jpeg"];
-        [self writeTextureToJPEGAtPath:tempJPEGPath];
-        self.textureJPEGPath = tempJPEGPath;
+        // mirrorscan-patches: only record the path if the texture actually wrote (untextured
+        // meshes have no textureData) so consumers can rely on non-nil meaning a real file.
+        if ([self writeTextureToJPEGAtPath:tempJPEGPath]) {
+            self.textureJPEGPath = tempJPEGPath;
+        }
     }
     
     SCNGeometrySource *positionSource = [self buildVertexGeometrySource];
@@ -105,7 +108,9 @@
         SCNGeometrySource *texCoordSource = [self buildTexCoordGeometrySource];
         geometry = [SCNGeometry geometryWithSources:@[positionSource, normalSource, texCoordSource]
                                            elements:@[element]];
-        geometry.firstMaterial.diffuse.contents = [NSURL fileURLWithPath:self.textureJPEGPath];
+        if (self.textureJPEGPath != nil) {
+            geometry.firstMaterial.diffuse.contents = [NSURL fileURLWithPath:self.textureJPEGPath];
+        }
     }
     
     geometry.firstMaterial.doubleSided = YES;

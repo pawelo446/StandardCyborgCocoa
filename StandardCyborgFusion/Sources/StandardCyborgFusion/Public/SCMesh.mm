@@ -100,6 +100,10 @@ using namespace standard_cyborg;
 
 - (NSData *)encodeTextureToJPEGData
 {
+    // mirrorscan-patches: untextured meshes have no textureData; JPEGRepresentationOfImage
+    // throws on a nil image, so bail out early instead.
+    if (self.textureData == nil || self.textureWidth == 0 || self.textureHeight == 0) { return nil; }
+
     CIImage *ciImage = [self textureAsCIImage];
     CIContext *context = [CIContext context];
     CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
