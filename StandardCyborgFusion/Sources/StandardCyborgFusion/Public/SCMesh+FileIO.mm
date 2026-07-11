@@ -29,6 +29,10 @@
 
 using namespace standard_cyborg;
 
+@interface SCMesh (FileIOPrivate)
+- (MDLAsset *)sc_MDLAssetForExport;
+@end
+
 @implementation SCMesh (FileIO)
 
 - (instancetype)initWithPLYPath:(NSString *)PLYPath
@@ -485,7 +489,7 @@ using namespace standard_cyborg;
     return true;
 }
 
-- (BOOL)writeToUSDCAtPath:(NSString *)USDCPath
+- (MDLAsset *)sc_MDLAssetForExport
 {
     MDLVertexAttribute *position = [[MDLVertexAttribute alloc] initWithName:MDLVertexAttributePosition
                                                                      format:MDLVertexFormatFloat4
@@ -575,19 +579,47 @@ using namespace standard_cyborg;
     MDLAsset *asset = [[MDLAsset alloc] initWithBufferAllocator:allocator];
     [asset addObject:mesh];
     [asset loadTextures];
-    
+
+    return asset;
+}
+
+- (BOOL)writeToUSDCAtPath:(NSString *)USDCPath
+{
+    MDLAsset *asset = [self sc_MDLAssetForExport];
+
     NSURL *USDCURL = [NSURL fileURLWithPath:USDCPath];
-    
+
     if ([[NSFileManager defaultManager] fileExistsAtPath:USDCPath]) {
         [[NSFileManager defaultManager] removeItemAtPath:USDCPath error:NULL];
     }
-    
+
     NSError *error;
     BOOL success = [asset exportAssetToURL:USDCURL error:&error];
     if (!success) {
         NSLog(@"Error exporting SCMesh to %@: %@", USDCURL, error);
     }
-    
+
+    return success;
+}
+
+// STL only carries triangle geometry (positions + faces) — no texture, color, or normal
+// data survives the round trip, since the format has no concept of them.
+- (BOOL)writeToSTLAtPath:(NSString *)STLPath
+{
+    MDLAsset *asset = [self sc_MDLAssetForExport];
+
+    NSURL *STLURL = [NSURL fileURLWithPath:STLPath];
+
+    if ([[NSFileManager defaultManager] fileExistsAtPath:STLPath]) {
+        [[NSFileManager defaultManager] removeItemAtPath:STLPath error:NULL];
+    }
+
+    NSError *error;
+    BOOL success = [asset exportAssetToURL:STLURL error:&error];
+    if (!success) {
+        NSLog(@"Error exporting SCMesh to %@: %@", STLURL, error);
+    }
+
     return success;
 }
 

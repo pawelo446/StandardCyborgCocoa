@@ -27,6 +27,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (BOOL)writeToUSDZAtPath:(NSString *)USDZPath;
 
+// STL only carries triangle geometry (positions + faces) — no texture, color, or normal
+// data survives the round trip, since the format has no concept of them.
+- (BOOL)writeToSTLAtPath:(NSString *)STLPath;
+
 @end
 
 NS_ASSUME_NONNULL_END
