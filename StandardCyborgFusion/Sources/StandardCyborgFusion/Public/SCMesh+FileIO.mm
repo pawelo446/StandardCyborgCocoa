@@ -30,7 +30,7 @@
 using namespace standard_cyborg;
 
 @interface SCMesh (FileIOPrivate)
-- (MDLAsset *)sc_MDLAssetForExport;
+- (MDLAsset *)sc_MDLAssetForExportWithScale:(float)scale;
 @end
 
 @implementation SCMesh (FileIO)
@@ -112,15 +112,18 @@ using namespace standard_cyborg;
         fprintf(file, "o %s\n", [objZipName UTF8String]);
 
         {
+            // Engine geometry is in meters; slicers/CAD conventionally read OBJ/STL as millimeters,
+            // so positions are exported x1000 to appear real-size there.
+            const float kOBJUnitScale = 1000.0f;
             const float *floatPositions = (const float *)[self.positionData bytes];
             const float *floatColors = (!hasTexture && self.colorData != nil) ? (const float *)[self.colorData bytes] : NULL;
             for (int iv = 0; iv < self.vertexCount; ++iv) {
                 if (floatColors != NULL) {
                     fprintf(file, "v %f %f %f %f %f %f\n",
-                            floatPositions[4 * iv + 0], floatPositions[4 * iv + 1], floatPositions[4 * iv + 2],
+                            floatPositions[4 * iv + 0] * kOBJUnitScale, floatPositions[4 * iv + 1] * kOBJUnitScale, floatPositions[4 * iv + 2] * kOBJUnitScale,
                             floatColors[4 * iv + 0], floatColors[4 * iv + 1], floatColors[4 * iv + 2]);
                 } else {
-                    fprintf(file, "v %f %f %f\n", floatPositions[4 * iv + 0], floatPositions[4 * iv + 1], floatPositions[4 * iv + 2]);
+                    fprintf(file, "v %f %f %f\n", floatPositions[4 * iv + 0] * kOBJUnitScale, floatPositions[4 * iv + 1] * kOBJUnitScale, floatPositions[4 * iv + 2] * kOBJUnitScale);
                 }
             }
         }
@@ -576,7 +579,7 @@ using namespace standard_cyborg;
     return loader.WriteGltfSceneToFile(&model, [GLBPath UTF8String], true, true, false, true);
 }
 
-- (MDLAsset *)sc_MDLAssetForExport
+- (MDLAsset *)sc_MDLAssetForExportWithScale:(float)scale
 {
     // mirrorscan-patches: texCoordData is nil for vertex-colored meshes (no texture) — omit the
     // texCoord attribute/buffer instead of passing a nil buffer to newBufferWithData:.
@@ -651,8 +654,21 @@ using namespace standard_cyborg;
     }
     
     MDLMeshBufferDataAllocator *allocator = [[MDLMeshBufferDataAllocator alloc] init];
-    
-    id<MDLMeshBuffer> positionBuffer = [allocator newBufferWithData:self.positionData type:MDLMeshBufferTypeVertex];
+
+    // Positions are Float4 per vertex; scale x/y/z only, leaving w untouched.
+    NSData *positionData = self.positionData;
+    if (scale != 1.0f) {
+        NSMutableData *scaledPositions = [positionData mutableCopy];
+        float *floats = (float *)[scaledPositions mutableBytes];
+        for (NSInteger iv = 0; iv < self.vertexCount; ++iv) {
+            floats[4 * iv + 0] *= scale;
+            floats[4 * iv + 1] *= scale;
+            floats[4 * iv + 2] *= scale;
+        }
+        positionData = scaledPositions;
+    }
+
+    id<MDLMeshBuffer> positionBuffer = [allocator newBufferWithData:positionData type:MDLMeshBufferTypeVertex];
     id<MDLMeshBuffer> normalBuffer = [allocator newBufferWithData:self.normalData type:MDLMeshBufferTypeVertex];
     id<MDLMeshBuffer> faceBuffer = [allocator newBufferWithData:self.facesData type:MDLMeshBufferTypeIndex];
 
@@ -685,7 +701,10 @@ using namespace standard_cyborg;
 
 - (BOOL)writeToUSDCAtPath:(NSString *)USDCPath
 {
-    MDLAsset *asset = [self sc_MDLAssetForExport];
+    // ModelIO does not author metersPerUnit (verified: exported crates contain upAxis only), and
+    // USD's fallback for unauthored metersPerUnit is 0.01 (centimeters). Engine geometry is in
+    // meters, so export x100 to appear real-world size in Quick Look / AR.
+    MDLAsset *asset = [self sc_MDLAssetForExportWithScale:100.0f];
 
     NSURL *USDCURL = [NSURL fileURLWithPath:USDCPath];
 
@@ -706,7 +725,9 @@ using namespace standard_cyborg;
 // data survives the round trip, since the format has no concept of them.
 - (BOOL)writeToSTLAtPath:(NSString *)STLPath
 {
-    MDLAsset *asset = [self sc_MDLAssetForExport];
+    // STL is unitless and slicers conventionally assume millimeters; engine geometry is in
+    // meters, so export x1000 to appear real-size for 3D printing.
+    MDLAsset *asset = [self sc_MDLAssetForExportWithScale:1000.0f];
 
     NSURL *STLURL = [NSURL fileURLWithPath:STLPath];
 
