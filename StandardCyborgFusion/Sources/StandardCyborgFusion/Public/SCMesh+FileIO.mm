@@ -74,6 +74,11 @@ using namespace standard_cyborg;
 
 - (BOOL)writeToOBJZipAtPath:(NSString *)objZipPath
 {
+    // mirrorscan-patches: meshes may be vertex-colored (texCoordData == nil, no texture) instead
+    // of textured. In that case, skip the texcoord/material/texture output entirely and write
+    // vertex colors inline via the common OBJ extension "v x y z r g b" instead.
+    BOOL hasTexture = (self.texCoordData != nil);
+
     // the name, without the path and extension.
     NSString *objZipName = [[objZipPath lastPathComponent] stringByDeletingPathExtension];
     
@@ -100,89 +105,125 @@ using namespace standard_cyborg;
         
         fprintf(file, "# StandardCyborgFusionVersion %s\n", SCFrameworkVersion());
         fprintf(file, "# StandardCyborgFusionMetadata { \"color_space\": \"sRGB\" }\n");
-        
-        fprintf(file, "mtllib %s\n", [mtlFilename UTF8String]);
+
+        if (hasTexture) {
+            fprintf(file, "mtllib %s\n", [mtlFilename UTF8String]);
+        }
         fprintf(file, "o %s\n", [objZipName UTF8String]);
-        
+
         {
             const float *floatPositions = (const float *)[self.positionData bytes];
+            const float *floatColors = (!hasTexture && self.colorData != nil) ? (const float *)[self.colorData bytes] : NULL;
             for (int iv = 0; iv < self.vertexCount; ++iv) {
-                fprintf(file, "v %f %f %f\n", floatPositions[4 * iv + 0], floatPositions[4 * iv + 1], floatPositions[4 * iv + 2]);
+                if (floatColors != NULL) {
+                    fprintf(file, "v %f %f %f %f %f %f\n",
+                            floatPositions[4 * iv + 0], floatPositions[4 * iv + 1], floatPositions[4 * iv + 2],
+                            floatColors[4 * iv + 0], floatColors[4 * iv + 1], floatColors[4 * iv + 2]);
+                } else {
+                    fprintf(file, "v %f %f %f\n", floatPositions[4 * iv + 0], floatPositions[4 * iv + 1], floatPositions[4 * iv + 2]);
+                }
             }
         }
-        
+
         {
             const float *floatNormals = (const float *)[self.normalData bytes];
             for (int iv = 0; iv < self.vertexCount; ++iv) {
                 fprintf(file, "vn %f %f %f\n", floatNormals[4 * iv + 0], floatNormals[4 * iv + 1], floatNormals[4 * iv + 2]);
             }
         }
-        
-        {
+
+        if (hasTexture) {
             const float *floatTexCoords = (const float *)[self.texCoordData bytes];
             for (int iv = 0; iv < self.vertexCount; ++iv) {
                 fprintf(file, "vt %f %f\n", floatTexCoords[2 * iv + 0], floatTexCoords[2 * iv + 1]);
             }
         }
-        
-        fprintf(file, "usemtl Texture\n");
+
+        if (hasTexture) {
+            fprintf(file, "usemtl Texture\n");
+        }
         fprintf(file, "s off\n");
-        
+
         {
             const int *intFaces = (const int *)[self.facesData bytes];
-            
+
             for (int iFace = 0; iFace < self.faceCount; iFace++) {
                 int index0 = intFaces[iFace * 3 + 0] + 1;
                 int index1 = intFaces[iFace * 3 + 1] + 1;
                 int index2 = intFaces[iFace * 3 + 2] + 1;
-                
-                fprintf(file, "f %d/%d/%d %d/%d/%d %d/%d/%d\n",
-                        index0, index0, index0,
-                        index1, index1, index1,
-                        index2, index2, index2);
+
+                if (hasTexture) {
+                    fprintf(file, "f %d/%d/%d %d/%d/%d %d/%d/%d\n",
+                            index0, index0, index0,
+                            index1, index1, index1,
+                            index2, index2, index2);
+                } else {
+                    fprintf(file, "f %d//%d %d//%d %d//%d\n",
+                            index0, index0,
+                            index1, index1,
+                            index2, index2);
+                }
             }
         }
-        
+
         fclose(file);
     }
-    
-    // write .mtl
-    {
-        FILE *file = fopen([tmpMtlPath UTF8String], "w");
-        if (file == NULL) {
-            return false;
+
+    if (hasTexture) {
+        // write .mtl
+        {
+            FILE *file = fopen([tmpMtlPath UTF8String], "w");
+            if (file == NULL) {
+                return false;
+            }
+
+            fprintf(file, "# StandardCyborgFusionVersion %s\n", SCFrameworkVersion());
+            fprintf(file, "# StandardCyborgFusionMetadata { \"color_space\": \"sRGB\" }\n");
+
+            fprintf(file, "newmtl Texture\n");
+            fprintf(file, "Ns 0.000000\n");
+            fprintf(file, "Kd 1.000000 1.000000 1.000000\n");
+            fprintf(file, "Ka 0.000000 0.000000 0.000000\n");
+            fprintf(file, "Ks 0.000000 0.000000 0.000000\n");
+            fprintf(file, "Ke 0.000000 0.000000 0.000000\n");
+            fprintf(file, "map_Kd %s\n", [jpegFilename UTF8String]);
+
+            fclose(file);
         }
-        
-        fprintf(file, "# StandardCyborgFusionVersion %s\n", SCFrameworkVersion());
-        fprintf(file, "# StandardCyborgFusionMetadata { \"color_space\": \"sRGB\" }\n");
-        
-        fprintf(file, "newmtl Texture\n");
-        fprintf(file, "Ns 0.000000\n");
-        fprintf(file, "Kd 1.000000 1.000000 1.000000\n");
-        fprintf(file, "Ka 0.000000 0.000000 0.000000\n");
-        fprintf(file, "Ks 0.000000 0.000000 0.000000\n");
-        fprintf(file, "Ke 0.000000 0.000000 0.000000\n");
-        fprintf(file, "map_Kd %s\n", [jpegFilename UTF8String]);
-        
-        fclose(file);
+
+        // write .jpeg
+        [self writeTextureToJPEGAtPath:tmpJpegPath];
     }
-    
-    // write .jpeg
-    [self writeTextureToJPEGAtPath:tmpJpegPath];
-    
+
     [SSZipArchive createZipFileAtPath:objZipPath withContentsOfDirectory:zipDirectory];
-    
+
     return true;
 }
 
 - (BOOL)writeToGLBAtPath:(NSString *)GLBPath
 {
+    // mirrorscan-patches: meshes may be vertex-colored (texCoordData == nil, no texture) instead
+    // of textured; branch on which data is present and embed colorData as COLOR_0 instead of
+    // TEXCOORD_0/texture, rather than reading a NULL texCoordData buffer.
+    BOOL hasTexture = (self.texCoordData != nil);
+    if (!hasTexture && self.colorData == nil) { return NO; }
+
+    NSData *JPEGData = nil;
+    if (hasTexture) {
+        JPEGData = [self encodeTextureToJPEGData];
+        // mirrorscan-patches: the GLB structure hard-codes a texture buffer, so a textured mesh
+        // without JPEG data can't be written in this format — fail the writer instead of
+        // crashing downstream.
+        if (JPEGData == nil) { return NO; }
+    }
+
     std::vector<unsigned char> vertexBufferBytes;
-    
+
     int iBeginFaces, iBeginNormals, iBeginPositions;
     int facesByteLength, normalsByteLength, positionsByteLength;
     int iBeginTexCoords, texCoordsByteLength;
-    
+    int iBeginColors, colorsByteLength;
+
     float ma = std::numeric_limits<float>::max();
     
     // gltf wants to know the maxPos and minPos for some reason
@@ -239,19 +280,26 @@ using namespace standard_cyborg;
             maxPos.z = std::max(z, maxPos.z);
         }
         
-        iBeginTexCoords = (int)vertexBufferBytes.size();
-        texCoordsByteLength = (int)(self.vertexCount * sizeof(math::Vec2));
-        
-        const unsigned char *texCoords = (const unsigned char *)[self.texCoordData bytes];
-        for (int ii = 0; ii < texCoordsByteLength; ++ii) {
-            vertexBufferBytes.push_back(texCoords[ii]);
+        if (hasTexture) {
+            iBeginTexCoords = (int)vertexBufferBytes.size();
+            texCoordsByteLength = (int)(self.vertexCount * sizeof(math::Vec2));
+
+            const unsigned char *texCoords = (const unsigned char *)[self.texCoordData bytes];
+            for (int ii = 0; ii < texCoordsByteLength; ++ii) {
+                vertexBufferBytes.push_back(texCoords[ii]);
+            }
+        } else {
+            // mirrorscan-patches: vertex-color path — mirror the normals section exactly,
+            // appending colorData (same math::Vec3 layout as normalData) as COLOR_0 instead.
+            iBeginColors = (int)vertexBufferBytes.size();
+            colorsByteLength = (int)(self.vertexCount * sizeof(math::Vec3));
+
+            const unsigned char *colors = (const unsigned char *)[self.colorData bytes];
+            for (int ii = 0; ii < colorsByteLength; ++ii) {
+                vertexBufferBytes.push_back(colors[ii]);
+            }
         }
     }
-    
-    NSData *JPEGData = [self encodeTextureToJPEGData];
-    // mirrorscan-patches: the GLB structure hard-codes a texture buffer, so an untextured mesh
-    // can't be written in this format — fail the writer instead of crashing downstream.
-    if (JPEGData == nil) { return NO; }
 
     typedef tinygltf::Value::Object Object;
     typedef tinygltf::Value Value;
@@ -296,69 +344,81 @@ using namespace standard_cyborg;
         
         primitive.attributes["NORMAL"] = 1;
         primitive.attributes["POSITION"] = 2;
-        primitive.attributes["TEXCOORD_0"] = 3;
-        
+        if (hasTexture) {
+            primitive.attributes["TEXCOORD_0"] = 3;
+        } else {
+            primitive.attributes["COLOR_0"] = 3;
+        }
+
         mesh.primitives.push_back(primitive);
-        
+
         model.meshes.push_back(mesh);
     }
-    
+
     {
         tinygltf::Material material;
-        material.pbrMetallicRoughness.baseColorTexture.index = 0; // use the first texture.
-        material.pbrMetallicRoughness.baseColorTexture.texCoord = 0; // use TEXCOORD_0
-        
+        if (hasTexture) {
+            material.pbrMetallicRoughness.baseColorTexture.index = 0; // use the first texture.
+            material.pbrMetallicRoughness.baseColorTexture.texCoord = 0; // use TEXCOORD_0
+        } else {
+            // mirrorscan-patches: no texture — plain white material; COLOR_0 (vertex colors)
+            // multiplies baseColorFactor per the glTF 2.0 spec, so vertex colors render as-is.
+            material.pbrMetallicRoughness.baseColorFactor = {1.0, 1.0, 1.0, 1.0};
+        }
+
         model.materials.push_back(material);
     }
-    
-    {
-        tinygltf::Texture texture;
-        
-        texture.sampler = 0; // first sampler
-        texture.source = 0; // first source image.
-        
-        model.textures.push_back(texture);
+
+    if (hasTexture) {
+        {
+            tinygltf::Texture texture;
+
+            texture.sampler = 0; // first sampler
+            texture.source = 0; // first source image.
+
+            model.textures.push_back(texture);
+        }
+
+        {
+            tinygltf::Sampler sampler;
+
+            sampler.minFilter = 9986; // TINYGLTF_TEXTURE_FILTER_NEAREST_MIPMAP_LINEAR
+            sampler.magFilter = 9729; // TINYGLTF_TEXTURE_FILTER_LINEAR
+
+            sampler.wrapS = 10497; // TINYGLTF_TEXTURE_WRAP_REPEAT
+            sampler.wrapT = 10497;
+
+            model.samplers.push_back(sampler);
+        }
+
+        {
+            tinygltf::Image image;
+
+            image.bufferView = 4;
+            image.mimeType = "image/jpeg";
+
+            model.images.push_back(image);
+        }
     }
-    
-    {
-        tinygltf::Sampler sampler;
-        
-        sampler.minFilter = 9986; // TINYGLTF_TEXTURE_FILTER_NEAREST_MIPMAP_LINEAR
-        sampler.magFilter = 9729; // TINYGLTF_TEXTURE_FILTER_LINEAR
-        
-        sampler.wrapS = 10497; // TINYGLTF_TEXTURE_WRAP_REPEAT
-        sampler.wrapT = 10497;
-        
-        model.samplers.push_back(sampler);
-    }
-    
-    {
-        tinygltf::Image image;
-        
-        image.bufferView = 4;
-        image.mimeType = "image/jpeg";
-        
-        model.images.push_back(image);
-    }
-    
+
     // buffer of vertex data
     {
         tinygltf::Buffer buffer;
         buffer.data = vertexBufferBytes;
         model.buffers.push_back(buffer);
     }
-    
-    // buffer of texture jpeg data.
-    {
+
+    if (hasTexture) {
+        // buffer of texture jpeg data.
         unsigned char *jpegDataStart = (unsigned char *)[JPEGData bytes];
         unsigned char *jpegDataEnd = jpegDataStart + [JPEGData length] / sizeof(unsigned char);
         std::vector<unsigned char> jpegDataVector(jpegDataStart, jpegDataEnd);
-        
+
         tinygltf::Buffer buffer;
         buffer.data = jpegDataVector;
         model.buffers.push_back(buffer);
     }
-    
+
     // indices buffer view.
     {
         tinygltf::BufferView bufferView;
@@ -443,54 +503,85 @@ using namespace standard_cyborg;
         model.accessors.push_back(accessor);
     }
     
-    // texCoords buffer view.
-    {
-        tinygltf::BufferView bufferView;
-        
-        bufferView.buffer = 0;
-        bufferView.byteOffset = iBeginTexCoords;
-        bufferView.byteLength = texCoordsByteLength;
-        bufferView.byteStride = sizeof(math::Vec2);
-        bufferView.target = 34962; // TARGET_ARRAY_BUFFER
-        
-        model.bufferViews.push_back(bufferView);
+    if (hasTexture) {
+        // texCoords buffer view.
+        {
+            tinygltf::BufferView bufferView;
+
+            bufferView.buffer = 0;
+            bufferView.byteOffset = iBeginTexCoords;
+            bufferView.byteLength = texCoordsByteLength;
+            bufferView.byteStride = sizeof(math::Vec2);
+            bufferView.target = 34962; // TARGET_ARRAY_BUFFER
+
+            model.bufferViews.push_back(bufferView);
+        }
+
+        // texCoords accessor.
+        {
+            tinygltf::Accessor accessor;
+
+            accessor.bufferView = 3;
+            accessor.byteOffset = 0;
+            accessor.normalized = false;
+            accessor.componentType = 5126; // COMPONENT_TYPE_FLOAT
+            accessor.count = self.vertexCount;
+            accessor.type = 2; // TYPE_VEC2
+
+            model.accessors.push_back(accessor);
+        }
+    } else {
+        // colors buffer view. Mirrors the normals bufferView (same math::Vec3 layout/stride).
+        {
+            tinygltf::BufferView bufferView;
+
+            bufferView.buffer = 0;
+            bufferView.byteOffset = iBeginColors;
+            bufferView.byteLength = colorsByteLength;
+            bufferView.byteStride = sizeof(math::Vec3);
+            bufferView.target = 34962; // TARGET_ARRAY_BUFFER
+
+            model.bufferViews.push_back(bufferView);
+        }
+
+        // colors accessor.
+        {
+            tinygltf::Accessor accessor;
+
+            accessor.bufferView = 3;
+            accessor.byteOffset = 0;
+            accessor.normalized = false;
+            accessor.componentType = 5126; // COMPONENT_TYPE_FLOAT
+            accessor.count = self.vertexCount;
+            accessor.type = 3; // TYPE_VEC3
+
+            model.accessors.push_back(accessor);
+        }
     }
-    
-    // texCoords accessor.
-    {
-        tinygltf::Accessor accessor;
-        
-        accessor.bufferView = 3;
-        accessor.byteOffset = 0;
-        accessor.normalized = false;
-        accessor.componentType = 5126; // COMPONENT_TYPE_FLOAT
-        accessor.count = self.vertexCount;
-        accessor.type = 2; // TYPE_VEC2
-        
-        model.accessors.push_back(accessor);
-    }
-    
-    // jpeg image buffer view
-    {
+
+    if (hasTexture) {
+        // jpeg image buffer view
         tinygltf::BufferView bufferView;
-        
+
         bufferView.buffer = 1;
         bufferView.byteOffset = 0;
         bufferView.byteLength = [JPEGData length];
         bufferView.byteStride = 0;
-        
+
         model.bufferViews.push_back(bufferView);
     }
-    
+
     tinygltf::TinyGLTF loader;
-    
+
     return loader.WriteGltfSceneToFile(&model, [GLBPath UTF8String], true, true, false, true);
-    
-    return true;
 }
 
 - (MDLAsset *)sc_MDLAssetForExport
 {
+    // mirrorscan-patches: texCoordData is nil for vertex-colored meshes (no texture) — omit the
+    // texCoord attribute/buffer instead of passing a nil buffer to newBufferWithData:.
+    BOOL hasTexCoords = (self.texCoordData != nil);
+
     MDLVertexAttribute *position = [[MDLVertexAttribute alloc] initWithName:MDLVertexAttributePosition
                                                                      format:MDLVertexFormatFloat4
                                                                      offset:0
@@ -499,15 +590,17 @@ using namespace standard_cyborg;
                                                                    format:MDLVertexFormatFloat4
                                                                    offset:0
                                                               bufferIndex:1];
-    MDLVertexAttribute *texCoord = [[MDLVertexAttribute alloc] initWithName:MDLVertexAttributeTextureCoordinate
-                                                                     format:MDLVertexFormatFloat2
-                                                                     offset:0
-                                                                bufferIndex:2];
-    
+
     MDLVertexDescriptor *descriptor = [[MDLVertexDescriptor alloc] init];
     [descriptor addOrReplaceAttribute:position];
     [descriptor addOrReplaceAttribute:normal];
-    [descriptor addOrReplaceAttribute:texCoord];
+    if (hasTexCoords) {
+        MDLVertexAttribute *texCoord = [[MDLVertexAttribute alloc] initWithName:MDLVertexAttributeTextureCoordinate
+                                                                         format:MDLVertexFormatFloat2
+                                                                         offset:0
+                                                                    bufferIndex:2];
+        [descriptor addOrReplaceAttribute:texCoord];
+    }
     [descriptor setPackedOffsets];
     [descriptor setPackedStrides];
     
@@ -561,17 +654,24 @@ using namespace standard_cyborg;
     
     id<MDLMeshBuffer> positionBuffer = [allocator newBufferWithData:self.positionData type:MDLMeshBufferTypeVertex];
     id<MDLMeshBuffer> normalBuffer = [allocator newBufferWithData:self.normalData type:MDLMeshBufferTypeVertex];
-    id<MDLMeshBuffer> texCoordBuffer = [allocator newBufferWithData:self.texCoordData type:MDLMeshBufferTypeVertex];
     id<MDLMeshBuffer> faceBuffer = [allocator newBufferWithData:self.facesData type:MDLMeshBufferTypeIndex];
-    
+
+    NSArray<id<MDLMeshBuffer>> *vertexBuffers;
+    if (hasTexCoords) {
+        id<MDLMeshBuffer> texCoordBuffer = [allocator newBufferWithData:self.texCoordData type:MDLMeshBufferTypeVertex];
+        vertexBuffers = @[positionBuffer, normalBuffer, texCoordBuffer];
+    } else {
+        vertexBuffers = @[positionBuffer, normalBuffer];
+    }
+
     MDLSubmesh *facesSubmesh = [[MDLSubmesh alloc] initWithName:@"Faces"
                                                     indexBuffer:faceBuffer
                                                      indexCount:3 * self.faceCount
                                                       indexType:MDLIndexBitDepthUInt32
                                                    geometryType:MDLGeometryTypeTriangles
                                                        material:material];
-    
-    MDLMesh *mesh = [[MDLMesh alloc] initWithVertexBuffers:@[positionBuffer, normalBuffer, texCoordBuffer]
+
+    MDLMesh *mesh = [[MDLMesh alloc] initWithVertexBuffers:vertexBuffers
                                                vertexCount:self.vertexCount
                                                 descriptor:descriptor
                                                  submeshes:@[facesSubmesh]];
