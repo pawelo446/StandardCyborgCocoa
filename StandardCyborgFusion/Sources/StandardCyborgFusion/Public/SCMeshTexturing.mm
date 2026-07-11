@@ -18,6 +18,7 @@
 #import "SCMesh+Geometry.h"
 #import "SCMesh_Private.h"
 #import "SCMeshTexturing.h"
+#import "SCPointCloud+Downsampling.h"
 #import "SCPointCloud+FileIO.h"
 #import "SCPointCloud_Private.h"
 
@@ -39,6 +40,10 @@ NSString * const SCMeshTexturingAPIErrorDomain = @"SCMeshTexturingAPIErrorDomain
 static NSString * const _ContainerFolderNamePrefix = @"SCMeshTexturing";
 static NSString * const _MetadataJSONFilename = @"Metadata.json";
 // clang-format on
+
+// Caps meshing input to avoid EXC_BAD_ACCESS from PoissonRecon exhausting memory on
+// multi-million-surfel scans
+static const NSUInteger kMeshingMaxInputPoints = 1500000;
 
 @interface _RGBFrameMetadata : NSObject
 @property (nonatomic) simd_float4x4 viewMatrix;
@@ -182,6 +187,12 @@ static NSString * const _MetadataJSONFilename = @"Metadata.json";
                                  progress:(void (^)(float progress, BOOL *))progressHandler
                                completion:(void (^)(NSError * _Nullable, SCMesh * _Nullable))completion
 {
+    if ((NSUInteger)pointCloud.pointCount > kMeshingMaxInputPoints) {
+        NSInteger originalPointCount = pointCloud.pointCount;
+        pointCloud = [pointCloud pointCloudByDownsamplingToMaxPoints:kMeshingMaxInputPoints];
+        NSLog(@"SCMeshTexturing: capping mesh input from %ld points to %ld points", (long)originalPointCount, (long)pointCloud.pointCount);
+    }
+
     if (textureResolution < 1) {
         NSError *error = [self _buildAPIError:SCMeshTexturingAPIErrorArgument
                                   description:@"Invalid texture resolution: %d", textureResolution];
@@ -241,7 +252,8 @@ static NSString * const _MetadataJSONFilename = @"Metadata.json";
             [pointCloud toGeometry:cloudGeometry];
             
             std::vector<math::Vec3> newColors;
-            
+            newColors.reserve(meshGeometry.vertexCount());
+
             for (int iv = 0; iv < meshGeometry.vertexCount(); ++iv) {
                 math::Vec3 pos = meshGeometry.getPositions()[iv];
                 
