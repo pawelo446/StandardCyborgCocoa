@@ -21,6 +21,7 @@
 #import "SCPointCloud+Downsampling.h"
 #import "SCPointCloud+FileIO.h"
 #import "SCPointCloud_Private.h"
+#import "ThreadPool.hpp"
 
 #import <standard_cyborg/io/imgfile/ColorImageFileIO.hpp>
 #import <standard_cyborg/io/ply/GeometryFileIO_PLY.hpp>
@@ -250,32 +251,50 @@ static const NSUInteger kMeshingMaxInputPoints = 1500000;
             // calculate the color of the vertices by finding the closest point in the point cloud.
             sc3d::Geometry cloudGeometry;
             [pointCloud toGeometry:cloudGeometry];
-            
-            std::vector<math::Vec3> newColors;
-            newColors.reserve(meshGeometry.vertexCount());
 
-            for (int iv = 0; iv < meshGeometry.vertexCount(); ++iv) {
-                math::Vec3 pos = meshGeometry.getPositions()[iv];
-                
-                int foundIndex = cloudGeometry.getClosestVertexIndex(pos);
-                
-                if (0 <= foundIndex && foundIndex < cloudGeometry.vertexCount()) {
-                    math::Vec3 closestColor = cloudGeometry.getColors()[foundIndex];
-                    newColors.push_back(closestColor);
-                } else {
-                
-                    if(cloudGeometry.getColors().size() > 0) {
-                        // okay, if we can't find a closest point for some reason, just pick one color from the point cloud as fallback.
-                        math::Vec3 col = cloudGeometry.getColors()[0];
-                        newColors.push_back(col);
-                    } else {
-                        // just to cover all bases.
-                        math::Vec3 col(1.0, 0.0, 0.0);
-                        newColors.push_back(col);
+            int vertexCount = (int)meshGeometry.vertexCount();
+            std::vector<math::Vec3> newColors(vertexCount);
+
+            // The kd-tree inside cloudGeometry is built lazily on first query, and
+            // that build is not thread-safe. Force it once on the calling thread
+            // before fanning work out across the ThreadPool's workers (same idiom
+            // used in ICP's _computeCorrespondence).
+            cloudGeometry.getClosestVertexIndex(math::Vec3(0, 0, 0));
+
+            int threadCount = (int)std::thread::hardware_concurrency();
+            if (threadCount < 1) { threadCount = 1; }
+            ThreadPool threadPool(threadCount, QOS_CLASS_USER_INITIATED);
+            dispatch_group_t colorGroup = dispatch_group_create();
+
+            for (int t = 0; t < threadCount; ++t) {
+                int rangeStart = (int)((int64_t)vertexCount * t / threadCount);
+                int rangeEnd = (int)((int64_t)vertexCount * (t + 1) / threadCount);
+
+                dispatch_group_enter(colorGroup);
+
+                threadPool.addJob([&meshGeometry, &cloudGeometry, &newColors, rangeStart, rangeEnd, colorGroup]() {
+                    for (int iv = rangeStart; iv < rangeEnd; ++iv) {
+                        math::Vec3 pos = meshGeometry.getPositions()[iv];
+
+                        int foundIndex = cloudGeometry.getClosestVertexIndex(pos);
+
+                        if (0 <= foundIndex && foundIndex < cloudGeometry.vertexCount()) {
+                            newColors[iv] = cloudGeometry.getColors()[foundIndex];
+                        } else if (cloudGeometry.getColors().size() > 0) {
+                            // okay, if we can't find a closest point for some reason, just pick one color from the point cloud as fallback.
+                            newColors[iv] = cloudGeometry.getColors()[0];
+                        } else {
+                            // just to cover all bases.
+                            newColors[iv] = math::Vec3(1.0, 0.0, 0.0);
+                        }
                     }
-                    
-                }
+
+                    dispatch_group_leave(colorGroup);
+                });
             }
+
+            dispatch_group_wait(colorGroup, DISPATCH_TIME_FOREVER);
+
             meshGeometry.setColors(newColors);
             
             reportProgress(1.0);
