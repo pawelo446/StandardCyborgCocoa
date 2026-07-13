@@ -458,22 +458,22 @@ ICPResult PBFModel::_runICP(ProcessedFrame& frame,
     std::vector<math::Vec3> downsampledNormals;
     std::vector<math::Vec3> downsampledColors;
     {
-        downsampledColors.reserve(frame.rawFrame.colors.size());
-        downsampledNormals.reserve(frame.normals.size());
-        downsampledVertices.reserve(frame.positions.size());
-        
         float downsampledFraction = pbfConfig.icpDownsampleFraction;
 
         // Pre-transform by the predicted pose (constant-velocity extrapolation) so ICP's initial residual
         // is as small as possible. When motion prediction is disabled in config, `predictedExtrinsic`
         // is just `_extrinsicMatrix`, which reduces to the original constant-pose seed.
         Matrix3f normalTransform = NormalMatrixFromMat4(predictedExtrinsic);
-        
+
         // Filter by depth
         size_t pointCount = frame.positions.size();
         size_t filteredCount = 0;
         size_t maxCount = (size_t)((float)pointCount * downsampledFraction);
-        
+
+        downsampledColors.reserve(maxCount);
+        downsampledNormals.reserve(maxCount);
+        downsampledVertices.reserve(maxCount);
+
         for (off_t i = 0; i < pointCount && filteredCount < maxCount; ++i) {
             // Add in a factor of four because otherwise the feature and center weighting-based sampling
             // will actually select far fewer than the requested number. To get the correct number of samples
