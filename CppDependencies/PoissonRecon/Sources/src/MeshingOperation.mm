@@ -6,6 +6,7 @@
 //
 
 #import <PoissonRecon/MeshingOperation.h>
+#import <PoissonRecon/MultiThreading.h>
 #import <PoissonRecon/Parameters.hpp>
 #import <PoissonRecon/ExecuteEntryFunctions.hpp>
 
@@ -72,6 +73,12 @@ static unsigned long long FileSizeAtPath(NSString *path) {
 
     __weak MeshingOperation *weakSelf = self;
     auto progressHandler = _progressHandler;
+
+    // The vendored PoissonRecon library defaults its internal ThreadPool to
+    // ParallelType::NONE (hard-serial). Switch it to ASYNC so PoissonReconExecute
+    // fans work out across std::async workers instead of running single-threaded.
+    // Thread count is left at its default (std::thread::hardware_concurrency()).
+    PoissonRecon::ThreadPool::ParallelizationType = PoissonRecon::ThreadPool::ParallelType::ASYNC;
 
     if (![weakSelf isCancelled]) {
         PoissonReconExecute(inputPath, poissonOutputPath, _closed, poissonParams, [weakSelf, progressHandler](float progress) {
