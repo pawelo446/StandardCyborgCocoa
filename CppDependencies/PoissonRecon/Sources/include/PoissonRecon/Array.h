@@ -30,6 +30,8 @@ DAMAGE.
 #define ARRAY_INCLUDED
 
 #include <vector>
+#include <cstdio>
+#include <cstdlib>
 #include "MyExceptions.h"
 
 #ifdef ARRAY_DEBUG
@@ -96,7 +98,16 @@ namespace PoissonRecon
 #define      DeletePointer( ... ) { if( __VA_ARGS__ )      delete[] __VA_ARGS__ ,                     __VA_ARGS__ = NULL; }
 
 	template< class C > C*          NewPointer(        size_t size ,                    const char* name=NULL ){ return new C[size]; }
-	template< class C > C*        AllocPointer(        size_t size ,                    const char* name=NULL ){ return (C*)        malloc(        sizeof(C) * size             ); }
+	template< class C > C*        AllocPointer(        size_t size ,                    const char* name=NULL )
+	{
+		C* ptr = (C*)malloc( sizeof(C) * size );
+		if( !ptr && size )
+		{
+			fprintf( stderr , "PoissonRecon: allocation of %zu bytes failed\n" , sizeof(C) * size );
+			abort();
+		}
+		return ptr;
+	}
 	template< class C > C* AlignedAllocPointer(        size_t size , size_t alignment , const char* name=NULL ){ return (C*)aligned_malloc(        sizeof(C) * size , alignment ); }
 	template< class C > C*      ReAllocPointer( C* c , size_t size ,                    const char* name=NULL ){ return (C*)       realloc( c    , sizeof(C) * size             ); }
 

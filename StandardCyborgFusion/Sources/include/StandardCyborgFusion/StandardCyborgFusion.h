@@ -31,6 +31,7 @@
 #import <StandardCyborgFusion/SCMeshTexturing.h>
 #import <StandardCyborgFusion/SCOfflineReconstructionManager.h>
 #import <StandardCyborgFusion/SCPointCloud.h>
+#import <StandardCyborgFusion/SCPointCloud+Downsampling.h>
 #import <StandardCyborgFusion/SCPointCloud+FileIO.h>
 #import <StandardCyborgFusion/SCPointCloud+Geometry.h>
 #import <StandardCyborgFusion/SCPointCloud+Metal.h>

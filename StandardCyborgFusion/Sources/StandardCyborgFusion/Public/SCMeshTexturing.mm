@@ -18,8 +18,10 @@
 #import "SCMesh+Geometry.h"
 #import "SCMesh_Private.h"
 #import "SCMeshTexturing.h"
+#import "SCPointCloud+Downsampling.h"
 #import "SCPointCloud+FileIO.h"
 #import "SCPointCloud_Private.h"
+#import "ThreadPool.hpp"
 
 #import <standard_cyborg/io/imgfile/ColorImageFileIO.hpp>
 #import <standard_cyborg/io/ply/GeometryFileIO_PLY.hpp>
@@ -39,6 +41,10 @@ NSString * const SCMeshTexturingAPIErrorDomain = @"SCMeshTexturingAPIErrorDomain
 static NSString * const _ContainerFolderNamePrefix = @"SCMeshTexturing";
 static NSString * const _MetadataJSONFilename = @"Metadata.json";
 // clang-format on
+
+// Caps meshing input to avoid EXC_BAD_ACCESS from PoissonRecon exhausting memory on
+// multi-million-surfel scans
+static const NSUInteger kMeshingMaxInputPoints = 1500000;
 
 @interface _RGBFrameMetadata : NSObject
 @property (nonatomic) simd_float4x4 viewMatrix;
@@ -182,6 +188,12 @@ static NSString * const _MetadataJSONFilename = @"Metadata.json";
                                  progress:(void (^)(float progress, BOOL *))progressHandler
                                completion:(void (^)(NSError * _Nullable, SCMesh * _Nullable))completion
 {
+    if ((NSUInteger)pointCloud.pointCount > kMeshingMaxInputPoints) {
+        NSInteger originalPointCount = pointCloud.pointCount;
+        pointCloud = [pointCloud pointCloudByDownsamplingToMaxPoints:kMeshingMaxInputPoints];
+        NSLog(@"SCMeshTexturing: capping mesh input from %ld points to %ld points", (long)originalPointCount, (long)pointCloud.pointCount);
+    }
+
     if (textureResolution < 1) {
         NSError *error = [self _buildAPIError:SCMeshTexturingAPIErrorArgument
                                   description:@"Invalid texture resolution: %d", textureResolution];
@@ -239,31 +251,50 @@ static NSString * const _MetadataJSONFilename = @"Metadata.json";
             // calculate the color of the vertices by finding the closest point in the point cloud.
             sc3d::Geometry cloudGeometry;
             [pointCloud toGeometry:cloudGeometry];
-            
-            std::vector<math::Vec3> newColors;
-            
-            for (int iv = 0; iv < meshGeometry.vertexCount(); ++iv) {
-                math::Vec3 pos = meshGeometry.getPositions()[iv];
-                
-                int foundIndex = cloudGeometry.getClosestVertexIndex(pos);
-                
-                if (0 <= foundIndex && foundIndex < cloudGeometry.vertexCount()) {
-                    math::Vec3 closestColor = cloudGeometry.getColors()[foundIndex];
-                    newColors.push_back(closestColor);
-                } else {
-                
-                    if(cloudGeometry.getColors().size() > 0) {
-                        // okay, if we can't find a closest point for some reason, just pick one color from the point cloud as fallback.
-                        math::Vec3 col = cloudGeometry.getColors()[0];
-                        newColors.push_back(col);
-                    } else {
-                        // just to cover all bases.
-                        math::Vec3 col(1.0, 0.0, 0.0);
-                        newColors.push_back(col);
+
+            int vertexCount = (int)meshGeometry.vertexCount();
+            std::vector<math::Vec3> newColors(vertexCount);
+
+            // The kd-tree inside cloudGeometry is built lazily on first query, and
+            // that build is not thread-safe. Force it once on the calling thread
+            // before fanning work out across the ThreadPool's workers (same idiom
+            // used in ICP's _computeCorrespondence).
+            cloudGeometry.getClosestVertexIndex(math::Vec3(0, 0, 0));
+
+            int threadCount = (int)std::thread::hardware_concurrency();
+            if (threadCount < 1) { threadCount = 1; }
+            ThreadPool threadPool(threadCount, QOS_CLASS_USER_INITIATED);
+            dispatch_group_t colorGroup = dispatch_group_create();
+
+            for (int t = 0; t < threadCount; ++t) {
+                int rangeStart = (int)((int64_t)vertexCount * t / threadCount);
+                int rangeEnd = (int)((int64_t)vertexCount * (t + 1) / threadCount);
+
+                dispatch_group_enter(colorGroup);
+
+                threadPool.addJob([&meshGeometry, &cloudGeometry, &newColors, rangeStart, rangeEnd, colorGroup]() {
+                    for (int iv = rangeStart; iv < rangeEnd; ++iv) {
+                        math::Vec3 pos = meshGeometry.getPositions()[iv];
+
+                        int foundIndex = cloudGeometry.getClosestVertexIndex(pos);
+
+                        if (0 <= foundIndex && foundIndex < cloudGeometry.vertexCount()) {
+                            newColors[iv] = cloudGeometry.getColors()[foundIndex];
+                        } else if (cloudGeometry.getColors().size() > 0) {
+                            // okay, if we can't find a closest point for some reason, just pick one color from the point cloud as fallback.
+                            newColors[iv] = cloudGeometry.getColors()[0];
+                        } else {
+                            // just to cover all bases.
+                            newColors[iv] = math::Vec3(1.0, 0.0, 0.0);
+                        }
                     }
-                    
-                }
+
+                    dispatch_group_leave(colorGroup);
+                });
             }
+
+            dispatch_group_wait(colorGroup, DISPATCH_TIME_FOREVER);
+
             meshGeometry.setColors(newColors);
             
             reportProgress(1.0);
@@ -360,10 +391,13 @@ static NSString * const _MetadataJSONFilename = @"Metadata.json";
     va_start(args, description);
     NSString *message = [[NSString alloc] initWithFormat:description arguments:args];
     va_end(args);
-    
+
     return [NSError errorWithDomain:SCMeshTexturingAPIErrorDomain
                                code:errorCode
-                           userInfo:@{NSDebugDescriptionErrorKey: message}];
+                           userInfo:@{
+                               NSLocalizedDescriptionKey: message,
+                               NSDebugDescriptionErrorKey: message,
+                           }];
 }
 
 - (void)_removeDataFromPreviousRuns
@@ -624,54 +658,102 @@ static NSString * const _MetadataJSONFilename = @"Metadata.json";
                   error:(NSError **)errorOut
         progressHandler:(void (^)(float, BOOL *))progressHandler
 {
+    // Pre-meshing input validation. PoissonRecon will silently produce nothing
+    // for trivially sparse clouds; refuse early with a concrete reason so the
+    // app can show it instead of waiting through a doomed meshing pass.
+    static const NSInteger kMinPointCountForMeshing = 500;
+    NSInteger inputCount = pointCloud.pointCount;
+    if (inputCount < kMinPointCountForMeshing) {
+        if (errorOut != NULL) {
+            *errorOut = [self _buildAPIError:SCMeshTexturingAPIErrorArgument
+                                 description:@"Point cloud too sparse to mesh: %ld points (minimum %ld). Likely cause: registration diverged during scan, so few frames were fused.",
+                                 (long)inputCount, (long)kMinPointCountForMeshing];
+        }
+        return NO;
+    }
+
     // Write the point cloud to a .ply file, so we can use SCMeshingOperation
     NSString *plyFilename = @"temp-point-cloud.ply";
     NSString *pointCloudPlyPath = [_containerPath stringByAppendingPathComponent:plyFilename];
     NSString *outputPath = [pointCloudPlyPath stringByReplacingOccurrencesOfString:@".ply" withString:@"-mesh.ply"];
-    
+
     [self _ensureContainerDirectory];
-    
+
+    // Remove any stale output from a prior run so post-meshing existence checks
+    // are meaningful.
+    [[NSFileManager defaultManager] removeItemAtPath:outputPath error:NULL];
+
     BOOL success = [pointCloud writeToPLYAtPath:pointCloudPlyPath];
     if (!success) {
         if (errorOut != NULL) {
             *errorOut = [self _buildAPIError:SCMeshTexturingAPIErrorInternal
-                                 description:@"Error writing to %@", pointCloudPlyPath];
+                                 description:@"Error writing point cloud to %@", pointCloudPlyPath];
         }
         return NO;
     }
-    
+
     __block BOOL shouldStop = NO;
-    
+
     SCMeshingOperation *operation = [[SCMeshingOperation alloc] initWithInputPLYPath:pointCloudPlyPath outputPLYPath:outputPath];
     operation.parameters = parameters;
-    
+
     __weak SCMeshingOperation *weakOperation = operation;
     operation.progressHandler = ^(float progress) {
         // Adapt the progress handler to allow cancellation
         progressHandler(progress, &shouldStop);
-        
+
         if (shouldStop) {
             NSLog(@"Cancelling meshing operation");
             [weakOperation cancel];
         }
     };
-    
+
     [operation start];
-    
+
     if ([operation isCancelled]) {
         return NO;
-    } else {
-        io::ply::ReadGeometryFromPLYFile(geometryOut, std::string([outputPath UTF8String]));
-        
-        // color is no longer needed beyond this point. discard.
-        std::vector<math::Vec3> newColors(geometryOut.vertexCount(), math::Vec3{1, 1, 1});
-        
-        if (!geometryOut.setColors(newColors)) {
-            return NO;
-        }
-        
-        return YES;
     }
+
+    // Surface silent failures from the C++ layer (PoissonRecon NULL solver,
+    // SurfaceTrimmer -1 returns, empty output PLY) rather than reading garbage.
+    if (operation.failureReason != nil) {
+        if (errorOut != NULL) {
+            *errorOut = [self _buildAPIError:SCMeshTexturingAPIErrorInternal
+                                 description:@"Meshing failed: %@", operation.failureReason];
+        }
+        return NO;
+    }
+
+    if (![[NSFileManager defaultManager] fileExistsAtPath:outputPath]) {
+        if (errorOut != NULL) {
+            *errorOut = [self _buildAPIError:SCMeshTexturingAPIErrorInternal
+                                 description:@"Meshing produced no output file at %@", outputPath];
+        }
+        return NO;
+    }
+
+    io::ply::ReadGeometryFromPLYFile(geometryOut, std::string([outputPath UTF8String]));
+
+    if (geometryOut.vertexCount() == 0) {
+        if (errorOut != NULL) {
+            *errorOut = [self _buildAPIError:SCMeshTexturingAPIErrorInternal
+                                 description:@"Meshing produced an empty mesh (0 vertices). Likely cause: input normals invalid or points coplanar."];
+        }
+        return NO;
+    }
+
+    // color is no longer needed beyond this point. discard.
+    std::vector<math::Vec3> newColors(geometryOut.vertexCount(), math::Vec3{1, 1, 1});
+
+    if (!geometryOut.setColors(newColors)) {
+        if (errorOut != NULL) {
+            *errorOut = [self _buildAPIError:SCMeshTexturingAPIErrorInternal
+                                 description:@"Failed to assign vertex colors to meshed geometry."];
+        }
+        return NO;
+    }
+
+    return YES;
 }
 
 #ifdef SAVE_DIAGNOSTICS

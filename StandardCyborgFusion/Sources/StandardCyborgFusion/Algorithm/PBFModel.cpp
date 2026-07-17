@@ -422,7 +422,22 @@ ICPResult PBFModel::_runICP(ProcessedFrame& frame,
     }
     
     if (shouldRebuildPointCloud) {
-        _ICPTargetCloud = buildPointCloud(pbfConfig.icpDownsampleFraction);
+        // mirrorscan-perf: the ICP target was always a fixed fraction of the *whole* model, so
+        // the periodic copy + kd-tree rebuild (and every correspondence query's tree depth) kept
+        // growing as the scan accumulated — at 640x360 the model passes a million surfels within
+        // seconds and each rebuild becomes a visible hitch. Cap the target size: behavior is
+        // bit-identical while fraction*surfelCount stays under the cap, flat cost above it.
+        // 120k target points is still several times the downsampled source cloud at max
+        // resolution, and correspondence only needs coverage of the currently visible region.
+        static const size_t kMaxICPTargetPointCount = 120000;
+
+        float targetFraction = pbfConfig.icpDownsampleFraction;
+        const size_t surfelCount = _surfels.size();
+        if ((float)surfelCount * targetFraction > (float)kMaxICPTargetPointCount) {
+            targetFraction = (float)kMaxICPTargetPointCount / (float)surfelCount;
+        }
+
+        _ICPTargetCloud = buildPointCloud(targetFraction);
     }
     
     // Create a downsampled copy of the points for running ICP,
@@ -432,22 +447,22 @@ ICPResult PBFModel::_runICP(ProcessedFrame& frame,
     std::vector<math::Vec3> downsampledNormals;
     std::vector<math::Vec3> downsampledColors;
     {
-        downsampledColors.reserve(frame.rawFrame.colors.size());
-        downsampledNormals.reserve(frame.normals.size());
-        downsampledVertices.reserve(frame.positions.size());
-        
         float downsampledFraction = pbfConfig.icpDownsampleFraction;
 
         // Pre-transform by the predicted pose (constant-velocity extrapolation) so ICP's initial residual
         // is as small as possible. When motion prediction is disabled in config, `predictedExtrinsic`
         // is just `_extrinsicMatrix`, which reduces to the original constant-pose seed.
         Matrix3f normalTransform = NormalMatrixFromMat4(predictedExtrinsic);
-        
+
         // Filter by depth
         size_t pointCount = frame.positions.size();
         size_t filteredCount = 0;
         size_t maxCount = (size_t)((float)pointCount * downsampledFraction);
-        
+
+        downsampledColors.reserve(maxCount);
+        downsampledNormals.reserve(maxCount);
+        downsampledVertices.reserve(maxCount);
+
         for (off_t i = 0; i < pointCount && filteredCount < maxCount; ++i) {
             // Add in a factor of four because otherwise the feature and center weighting-based sampling
             // will actually select far fewer than the requested number. To get the correct number of samples

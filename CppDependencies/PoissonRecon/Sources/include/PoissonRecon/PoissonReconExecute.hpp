@@ -10,6 +10,8 @@
 #include "DataStream.imp.h"
 #include "VertexFactory.h"
 
+#include <mutex>
+
 using namespace PoissonRecon;
 
 // Adapter: reads a PLY file with position+normal+color and presents as InputOrientedSampleStream
@@ -43,7 +45,10 @@ private:
     PLYInputDataStream<Factory> _stream;
 };
 
-// Collects level-set vertices from extractLevelSet
+// Collects level-set vertices from extractLevelSet.
+// extractLevelSet calls the thread-indexed write() overload concurrently from every
+// ThreadPool worker, so all writes must be serialized — the returned index doubles as
+// the vertex id that faces reference, so per-thread buffers are not an option.
 struct VertexCollector : public Reconstructor::OutputLevelSetVertexStream<float, 3, Point<float, 3>>
 {
     struct OutputVertex {
@@ -54,9 +59,11 @@ struct VertexCollector : public Reconstructor::OutputLevelSetVertexStream<float,
     };
 
     std::vector<OutputVertex> vertices;
+    std::mutex mutex;
 
     size_t write(const Point<float, 3>& p, const Point<float, 3>& g, const float& w, const Point<float, 3>& c)
     {
+        std::lock_guard<std::mutex> lock(mutex);
         vertices.push_back({p, g, w, c});
         return vertices.size() - 1;
     }
@@ -69,13 +76,15 @@ struct VertexCollector : public Reconstructor::OutputLevelSetVertexStream<float,
     size_t size() const { return vertices.size(); }
 };
 
-// Collects faces from extractLevelSet
+// Collects faces from extractLevelSet. Same concurrent-write contract as VertexCollector.
 struct FaceCollector : public Reconstructor::OutputFaceStream<2>
 {
     std::vector<std::vector<node_index_type>> faces;
+    std::mutex mutex;
 
     size_t write(const std::vector<node_index_type>& f)
     {
+        std::lock_guard<std::mutex> lock(mutex);
         faces.push_back(f);
         return faces.size() - 1;
     }

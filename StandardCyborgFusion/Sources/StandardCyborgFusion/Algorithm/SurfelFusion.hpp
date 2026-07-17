@@ -37,9 +37,10 @@ public:
     const std::vector<uint32_t>& getSurfelIndexLookups()const;
     
 private:
-    void cullLowConfidence(bool ignoreLifetime, int minWeight, Surfels& surfels, std::vector<int>* deletedSurfelList =NULL  );
-    
+    void cullLowConfidence(bool ignoreLifetime, int minWeight, Surfels& surfels, std::vector<int>* deletedSurfelList = NULL, uint32_t lifetimeDecay = 0);
+
     std::shared_ptr<SurfelIndexMap> _surfelIndexMap;
     std::vector<uint32_t> _surfelIndexLookups;
+    int _framesSinceCullSweep = 0;
 };
 #endif /* SurfelFusion_hpp */
